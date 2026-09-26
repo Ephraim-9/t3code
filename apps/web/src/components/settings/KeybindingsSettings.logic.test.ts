@@ -88,6 +88,7 @@ describe("KeybindingsSettings.logic", () => {
       "usage.period.week",
       "usage.period.month",
       "usage.period.quarter",
+      "usage.period.year",
     ];
     // The order must not depend on the order of the configured bindings.
     for (const bindings of [
