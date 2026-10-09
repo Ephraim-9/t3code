@@ -59,6 +59,7 @@ describe("buildFileContextMenuItems", () => {
     const items = buildFileContextMenuItems({
       hasAbsolutePath: true,
       capabilities: {
+        canDownload: false,
         revealLabel: "Reveal in Finder",
         canOpenDefault: true,
         editorIds: ["vscode", "cursor", "file-manager"],
@@ -77,6 +78,7 @@ describe("buildFileContextMenuItems", () => {
     const items = buildFileContextMenuItems({
       hasAbsolutePath: true,
       capabilities: {
+        canDownload: false,
         revealLabel: "Reveal in File Explorer",
         canOpenDefault: false,
         editorIds: [],
@@ -92,11 +94,28 @@ describe("buildFileContextMenuItems", () => {
       buildFileContextMenuItems({
         hasAbsolutePath: false,
         capabilities: {
+          canDownload: true,
           revealLabel: "Reveal in Finder",
           canOpenDefault: true,
           editorIds: ["vscode"],
         },
       }),
+    ).toEqual([]);
+  });
+
+  it("offers a download on a host with no file manager, and never for a folder", () => {
+    const capabilities = {
+      canDownload: true,
+      revealLabel: undefined,
+      canOpenDefault: false,
+      editorIds: [],
+    } as const;
+
+    expect(
+      buildFileContextMenuItems({ hasAbsolutePath: true, capabilities }).map((item) => item.id),
+    ).toEqual(["download"]);
+    expect(
+      buildFileContextMenuItems({ hasAbsolutePath: true, isDirectory: true, capabilities }),
     ).toEqual([]);
   });
 });

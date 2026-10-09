@@ -1,6 +1,6 @@
 /**
- * Right-click actions for a workspace file: reveal it in the environment's
- * file manager and open it in an editor. Reuse the chat file-chip menu's
+ * Right-click actions for a workspace file: download it to this device, reveal
+ * it in the environment's file manager, and open it in an editor. Reuse the chat file-chip menu's
  * machinery: reveal rides `shell.openInEditor` with `reveal: true`, which the
  * server only honors when its `shellRevealInFileManager` config flag is set,
  * so both actions work for every client and connection mode.
@@ -18,8 +18,10 @@ import {
   revealInFileExplorerLabelForKind,
   revealInFileExplorerLabelForOs,
 } from "~/components/preview/fileExplorerLabel";
+import { useDownloadHostFile } from "./assets/downloadHostFile";
 import { readLocalApi } from "./localApi";
 import { serverEnvironment } from "./state/server";
+import { useFilesystemReadAccess } from "./state/filesystem";
 import { shellEnvironment } from "./state/shell";
 import { useAtomCommand } from "./state/use-atom-command";
 import { resolvePathLinkTarget } from "@t3tools/shared/fileLinks";
@@ -27,6 +29,7 @@ import { toastManager } from "./components/ui/toast";
 import { useAtomValue } from "@effect/atom-react";
 
 export type FileContextMenuAction =
+  | "download"
   | "reveal-in-folder"
   | "open"
   /** Submenu parent; never the activated id. */
@@ -39,6 +42,8 @@ export interface FileContextMenuTarget {
   readonly filePath: string;
   readonly workspaceRoot: string | undefined;
   readonly repositoryRoot?: string | undefined;
+  /** A folder offers no download. */
+  readonly isDirectory?: boolean;
 }
 
 /** Absolute path on the environment host, or null when it cannot be resolved. */
@@ -66,6 +71,7 @@ export function resolveFileContextMenuAbsolutePath(target: FileContextMenuTarget
 const EDITOR_LABEL_BY_ID = new Map(EDITORS.map((editor) => [editor.id, editor.label]));
 
 export interface FileContextMenuCapabilities {
+  readonly canDownload: boolean;
   readonly revealLabel: string | undefined;
   readonly canOpenDefault: boolean;
   readonly editorIds: ReadonlyArray<EditorId>;
@@ -74,15 +80,20 @@ export interface FileContextMenuCapabilities {
 /**
  * Menu items for a resolved file, offering only what the environment's config
  * advertises: default-app open, reveal (with server-provided wording), and an
- * "Open with" submenu of detected editors. Empty when nothing can act.
+ * "Open with" submenu of detected editors, plus a download to this device that
+ * works for any connection that may read host files. Empty when nothing can act.
  */
 export function buildFileContextMenuItems(input: {
   readonly hasAbsolutePath: boolean;
+  readonly isDirectory?: boolean;
   readonly capabilities: FileContextMenuCapabilities;
 }): readonly ContextMenuItem<FileContextMenuAction>[] {
   // Without a resolvable absolute path nothing here can act on the file.
   if (!input.hasAbsolutePath) return [];
   const items: ContextMenuItem<FileContextMenuAction>[] = [];
+  if (input.capabilities.canDownload && input.isDirectory !== true) {
+    items.push({ id: "download", label: "Download", icon: "download" });
+  }
   if (input.capabilities.canOpenDefault) {
     items.push({ id: "open", label: "Open", icon: "pencil" });
   }
@@ -115,11 +126,14 @@ export function buildFileContextMenuItems(input: {
 /** Builds and dispatches the file context menu for one environment's files. */
 export function useFileContextMenu(environmentId: EnvironmentId | null) {
   const openInEditor = useAtomCommand(shellEnvironment.openInEditor, { reportFailure: false });
+  const downloadHostFile = useDownloadHostFile(environmentId);
+  const { canReadFiles } = useFilesystemReadAccess(environmentId);
   const serverConfig = useAtomValue(serverEnvironment.configValueAtom(environmentId));
 
   return useMemo(() => {
     const availableEditors = serverConfig?.availableEditors ?? [];
     const capabilities: FileContextMenuCapabilities = {
+      canDownload: environmentId !== null && canReadFiles,
       // The reveal wording comes from the server because on WSL the reveal can
       // run through Windows File Explorer even though the host reports Linux.
       revealLabel:
@@ -140,6 +154,10 @@ export function useFileContextMenu(environmentId: EnvironmentId | null) {
     ): Promise<void> => {
       const absolutePath = resolveFileContextMenuAbsolutePath(target);
       if (absolutePath === null || environmentId === null) return;
+      if (action === "download") {
+        await downloadHostFile(absolutePath);
+        return;
+      }
 
       const reveal = action === "reveal-in-folder";
       const editor =
@@ -172,6 +190,7 @@ export function useFileContextMenu(environmentId: EnvironmentId | null) {
       const api = readLocalApi();
       const items = buildFileContextMenuItems({
         hasAbsolutePath: resolveFileContextMenuAbsolutePath(target) !== null,
+        isDirectory: target.isDirectory === true,
         capabilities,
       });
       if (items.length === 0 || api === undefined) return;
@@ -184,13 +203,14 @@ export function useFileContextMenu(environmentId: EnvironmentId | null) {
       buildItems: (target: FileContextMenuTarget) =>
         buildFileContextMenuItems({
           hasAbsolutePath: resolveFileContextMenuAbsolutePath(target) !== null,
+          isDirectory: target.isDirectory === true,
           capabilities,
         }),
       capabilities,
       activate,
       show,
     };
-  }, [environmentId, openInEditor, serverConfig]);
+  }, [canReadFiles, downloadHostFile, environmentId, openInEditor, serverConfig]);
 }
 
 /** Convenience callback for onContextMenu handlers. */
