@@ -113,6 +113,12 @@ const AssetClaimsSchema = Schema.Union([
   }),
   Schema.Struct({
     version: Schema.Literal(1),
+    kind: Schema.Literal("file-download"),
+    filePath: Schema.String,
+    expiresAt: Schema.Number,
+  }),
+  Schema.Struct({
+    version: Schema.Literal(1),
     kind: Schema.Literal("attachment"),
     attachmentId: Schema.String,
     /** Decided at mint time. Absent tokens (from before this field) serve
@@ -493,6 +499,22 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
       claims = finalized.claims;
       fileName = finalized.fileName;
       imageDimensions = finalized.imageDimensions;
+      break;
+    }
+    case "file-download": {
+      if (!path.isAbsolute(input.resource.path)) {
+        return yield* new AssetWorkspaceAssetNotFoundError({ resource: input.resource });
+      }
+      const canonicalFile = yield* resolveCanonicalFile(input.resource.path).pipe(
+        Effect.mapError(
+          (cause) => new AssetWorkspaceAssetInspectionError({ resource: input.resource, cause }),
+        ),
+      );
+      if (!canonicalFile) {
+        return yield* new AssetWorkspaceAssetNotFoundError({ resource: input.resource });
+      }
+      claims = { version: 1, kind: "file-download", filePath: canonicalFile, expiresAt };
+      fileName = path.basename(canonicalFile);
       break;
     }
     case "workspace-file": {
@@ -887,6 +909,16 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
   const decodedPath = decodeRelativePath(relativePath);
   if (decodedPath === null) return null;
   const path = yield* Path.Path;
+  if (claims.kind === "file-download") {
+    const fileName = path.basename(claims.filePath);
+    if (decodedPath !== fileName) return null;
+    const canonicalFile = yield* resolveCanonicalFile(claims.filePath).pipe(
+      Effect.orElseSucceed(() => null),
+    );
+    return canonicalFile === claims.filePath
+      ? ({ kind: "file", path: canonicalFile, download: true, fileName } satisfies ResolvedAsset)
+      : null;
+  }
   if (claims.kind === "media-file-exact") {
     if (decodedPath !== path.basename(claims.filePath)) return null;
     const canonicalFile = yield* resolveCanonicalFile(claims.filePath).pipe(
