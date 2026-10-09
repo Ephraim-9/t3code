@@ -5,12 +5,14 @@ import {
   type EnvironmentId,
 } from "@t3tools/contracts";
 
+import { useDownloadHostFile } from "./assets/downloadHostFile";
 import { resolveDiffPathForWorkspace } from "./diffFileActions";
 import {
   revealInFileExplorerLabelForKind,
   revealInFileExplorerLabelForOs,
 } from "~/components/preview/fileExplorerLabel";
 import { readLocalApi } from "./localApi";
+import { useFilesystemReadAccess } from "./state/filesystem";
 import { serverEnvironment } from "./state/server";
 import { shellEnvironment } from "./state/shell";
 import { useAtomCommand } from "./state/use-atom-command";
@@ -19,6 +21,7 @@ import { toastManager } from "./components/ui/toast";
 import { useAtomValue } from "@effect/atom-react";
 
 export type FileContextMenuAction =
+  | "download"
   | "reveal-in-folder"
   | "open"
   /** Submenu parent; never the activated id. */
@@ -31,6 +34,8 @@ export interface FileContextMenuTarget {
   readonly filePath: string;
   readonly workspaceRoot: string | undefined;
   readonly repositoryRoot?: string | undefined;
+  /** A folder offers no download. */
+  readonly isDirectory?: boolean;
 }
 
 export function resolveFileContextMenuAbsolutePath(target: FileContextMenuTarget): string | null {
@@ -51,6 +56,7 @@ export function resolveFileContextMenuAbsolutePath(target: FileContextMenuTarget
 const EDITOR_LABEL_BY_ID = new Map(EDITORS.map((editor) => [editor.id, editor.label]));
 
 export interface FileContextMenuCapabilities {
+  readonly canDownload: boolean;
   readonly revealLabel: string | undefined;
   readonly canOpenDefault: boolean;
   readonly editorIds: ReadonlyArray<EditorId>;
@@ -58,10 +64,14 @@ export interface FileContextMenuCapabilities {
 
 export function buildFileContextMenuItems(input: {
   readonly hasAbsolutePath: boolean;
+  readonly isDirectory?: boolean;
   readonly capabilities: FileContextMenuCapabilities;
 }): readonly ContextMenuItem<FileContextMenuAction>[] {
   if (!input.hasAbsolutePath) return [];
   const items: ContextMenuItem<FileContextMenuAction>[] = [];
+  if (input.capabilities.canDownload && input.isDirectory !== true) {
+    items.push({ id: "download", label: "Download", icon: "download" });
+  }
   if (input.capabilities.canOpenDefault) {
     items.push({ id: "open", label: "Open", icon: "pencil" });
   }
@@ -89,9 +99,12 @@ export function buildFileContextMenuItems(input: {
 export function useFileContextMenu(environmentId: EnvironmentId | null) {
   const openInEditor = useAtomCommand(shellEnvironment.openInEditor, { reportFailure: false });
   const serverConfig = useAtomValue(serverEnvironment.configValueAtom(environmentId));
+  const downloadHostFile = useDownloadHostFile(environmentId);
+  const { canReadFiles } = useFilesystemReadAccess(environmentId);
 
   const availableEditors = serverConfig?.availableEditors ?? [];
   const capabilities: FileContextMenuCapabilities = {
+    canDownload: environmentId !== null && canReadFiles,
     // The reveal wording comes from the server because on WSL the reveal can
     // run through Windows File Explorer even though the host reports Linux.
     revealLabel:
@@ -112,6 +125,10 @@ export function useFileContextMenu(environmentId: EnvironmentId | null) {
   ): Promise<void> => {
     const absolutePath = resolveFileContextMenuAbsolutePath(target);
     if (absolutePath === null || environmentId === null) return;
+    if (action === "download") {
+      await downloadHostFile(absolutePath);
+      return;
+    }
 
     const reveal = action === "reveal-in-folder";
     const editor =
@@ -144,6 +161,7 @@ export function useFileContextMenu(environmentId: EnvironmentId | null) {
     const api = readLocalApi();
     const items = buildFileContextMenuItems({
       hasAbsolutePath: resolveFileContextMenuAbsolutePath(target) !== null,
+      isDirectory: target.isDirectory === true,
       capabilities,
     });
     if (items.length === 0 || api === undefined) return;
@@ -156,6 +174,7 @@ export function useFileContextMenu(environmentId: EnvironmentId | null) {
     buildItems: (target: FileContextMenuTarget) =>
       buildFileContextMenuItems({
         hasAbsolutePath: resolveFileContextMenuAbsolutePath(target) !== null,
+        isDirectory: target.isDirectory === true,
         capabilities,
       }),
     capabilities,
