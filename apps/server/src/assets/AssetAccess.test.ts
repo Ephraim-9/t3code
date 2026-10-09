@@ -1192,6 +1192,44 @@ describe("AssetAccess", () => {
       ).toMatchObject({ kind: "file", path: attachmentPath, download: true });
     }).pipe(Effect.provide(layerTest)),
   );
+  it.effect("serves any regular file as a named download, and nothing else", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-file-download-" });
+      const filePath = path.join(dir, "backup.tar.gz");
+      yield* fs.writeFileString(filePath, "bytes");
+      yield* fs.writeFileString(path.join(dir, "sibling.txt"), "private sibling");
+      const canonicalFile = yield* fs.realPath(filePath);
+
+      const result = yield* issueAssetUrl({ resource: { _tag: "file-download", path: filePath } });
+      const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
+      const separator = suffix.indexOf("/");
+      const token = suffix.slice(0, separator);
+
+      expect(yield* resolveAsset(token, suffix.slice(separator + 1))).toEqual({
+        kind: "file",
+        path: canonicalFile,
+        download: true,
+        fileName: "backup.tar.gz",
+      });
+      expect(yield* resolveAsset(token, "sibling.txt")).toBeNull();
+      expect(yield* resolveAsset(`${token}tampered`, "backup.tar.gz")).toBeNull();
+
+      const missing = yield* Effect.flip(
+        issueAssetUrl({ resource: { _tag: "file-download", path: path.join(dir, "gone.bin") } }),
+      );
+      expect(missing._tag).toBe("AssetWorkspaceAssetNotFoundError");
+      const directory = yield* Effect.flip(
+        issueAssetUrl({ resource: { _tag: "file-download", path: dir } }),
+      );
+      expect(directory._tag).toBe("AssetWorkspaceAssetNotFoundError");
+      const relative = yield* Effect.flip(
+        issueAssetUrl({ resource: { _tag: "file-download", path: "backup.tar.gz" } }),
+      );
+      expect(relative._tag).toBe("AssetWorkspaceAssetNotFoundError");
+    }).pipe(Effect.provide(layerTest)),
+  );
   it.effect("issues project favicon capabilities with a signed fallback", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;

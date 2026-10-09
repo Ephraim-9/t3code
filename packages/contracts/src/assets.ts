@@ -20,6 +20,11 @@ export const AssetResource = Schema.Union([
     threadId: ThreadId,
     path: TrimmedNonEmptyString.check(Schema.isMaxLength(ASSET_PATH_MAX_LENGTH)),
   }),
+  // Any regular file the environment host can read, served as a download with
+  // its real name and no preview-type limit. The path is absolute.
+  Schema.TaggedStruct("file-download", {
+    path: TrimmedNonEmptyString.check(Schema.isMaxLength(ASSET_PATH_MAX_LENGTH)),
+  }),
   Schema.TaggedStruct("draft-workspace-file", {
     cwd: TrimmedNonEmptyString.check(Schema.isMaxLength(ASSET_PATH_MAX_LENGTH)),
     path: TrimmedNonEmptyString.check(Schema.isMaxLength(ASSET_PATH_MAX_LENGTH)),
