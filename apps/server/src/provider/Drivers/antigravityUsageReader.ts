@@ -115,10 +115,13 @@ const MODEL_IDS: Record<number, string> = {
   1322: "gemini-3.8-flash-tiered",
 };
 
-/** Prices effort and routing variants such as `gemini-3.8-flash-high` at their base model. */
+/**
+ * Antigravity names effort and routing variants (`gemini-3.8-flash-high`,
+ * `gemini-3-flash-agent`) that the rate table only lists as the base model, and
+ * Gemini 3 Flash only under its preview name.
+ */
 function antigravityRateModel(model: string): string {
   const base = model.replace(/-(?:extra-low|low|medium|high|tiered|control|thinking|agent)$/, "");
-  // Rate tables only list Gemini 3 Flash under its preview name, as `MODEL_IDS` does.
   return base === "gemini-3-flash" ? "gemini-3-flash-preview" : base;
 }
 
@@ -317,18 +320,16 @@ function usageCandidates(
           const id = textAt(usage, key);
           return id ? [`antigravity:${key}:${id}`] : [];
         });
-        const model =
-          MODEL_IDS[numberAt(usage, 1)] ||
-          entry.model ||
-          (source === "step" ? generationModels.get(idx) : "") ||
-          modelName("", numberAt(usage, 1)) ||
-          "antigravity-unknown";
         const record: UsageRecord = {
           provider: "antigravity",
           sessionId,
           timestampMs: entry.timestampMs ?? trajectoryTimestamp ?? fallbackTimestamp,
-          model,
-          rateModel: antigravityRateModel(model),
+          model:
+            MODEL_IDS[numberAt(usage, 1)] ||
+            entry.model ||
+            (source === "step" ? generationModels.get(idx) : "") ||
+            modelName("", numberAt(usage, 1)) ||
+            "antigravity-unknown",
           totals,
           reportedCostUsd: null,
           speed: "standard",
@@ -401,16 +402,14 @@ export const readAntigravityUsage = Effect.fn("readAntigravityUsage")(function* 
         : target;
     const x = target.record.totals;
     const y = source.record.totals;
-    const model =
-      first.record.model === "antigravity-unknown"
-        ? first === target
-          ? source.record.model
-          : target.record.model
-        : first.record.model;
     target.record = {
       ...first.record,
-      model,
-      rateModel: antigravityRateModel(model),
+      model:
+        first.record.model === "antigravity-unknown"
+          ? first === target
+            ? source.record.model
+            : target.record.model
+          : first.record.model,
       timestampMs: bestTime.record.timestampMs,
       totals: {
         uncachedInputTokens: Math.max(x.uncachedInputTokens, y.uncachedInputTokens),
@@ -505,7 +504,12 @@ export const readAntigravityUsage = Effect.fn("readAntigravityUsage")(function* 
   }
   for (const [index, group] of groups.entries()) {
     if (group.parent === index && group.record.timestampMs >= sinceMs) {
-      files[group.fileIndex]!.records.push(group.record);
+      // Merging may still swap an `antigravity-unknown` model for a named one, so price here.
+      const { record } = group;
+      files[group.fileIndex]!.records.push({
+        ...record,
+        rateModel: antigravityRateModel(record.model),
+      });
     }
   }
   return { files, errors };
