@@ -99,7 +99,6 @@ const MODEL_IDS: Record<number, string> = {
   1018: "gemini-3-flash-preview",
   1084: "gemini-3-flash-preview",
   1047: "gemini-3-flash-preview",
-  342: "gpt-oss-120b-medium",
   1020: "gemini-3.5-flash-low",
   1072: "gemini-3.6-flash-medium",
   1073: "gemini-3.6-flash-low",
@@ -115,14 +114,14 @@ const MODEL_IDS: Record<number, string> = {
   1322: "gemini-3.8-flash-tiered",
 };
 
-/**
- * Antigravity names effort and routing variants (`gemini-3.8-flash-high`,
- * `gemini-3-flash-agent`) that the rate table only lists as the base model, and
- * Gemini 3 Flash only under its preview name.
- */
-function antigravityRateModel(model: string): string {
-  const base = model.replace(/-(?:extra-low|low|medium|high|tiered|control|thinking|agent)$/, "");
-  return base === "gemini-3-flash" ? "gemini-3-flash-preview" : base;
+// Effort and routing variants share the base model's price.
+function withRateModel(record: UsageRecord): UsageRecord {
+  const base = record.model.replace(
+    /-(?:extra-low|low|medium|high|tiered|control|thinking|agent)$/,
+    "",
+  );
+  const rateModel = base === "gemini-3-flash" ? "gemini-3-flash-preview" : base;
+  return rateModel === record.model ? record : { ...record, rateModel };
 }
 
 function modelName(name: string, id: number): string {
@@ -194,11 +193,7 @@ class AntigravityDatabaseDecodeError extends Schema.TaggedError<AntigravityDatab
   }
 }
 
-/**
- * One statement.all() holds the event loop until every row it returns is in memory, and a
- * generation row carries the conversation's whole context so far, often megabytes, so generations
- * are read one at a time.
- */
+/** Generation rows can hold megabytes of context; read one at a time to bound blocking statement.all(). */
 const GENERATION_PAGE_ROWS = 1;
 const STEP_PAGE_ROWS = 64;
 
@@ -223,9 +218,7 @@ const readDatabase = Effect.fn("readDatabase")(function* (
     if (!tables.has("gen_metadata") && !tables.has("steps")) {
       return yield* new AntigravityDatabaseDecodeError({ path });
     }
-    // A rowid seek works whatever the table's indexes. Antigravity declares idx as the INTEGER
-    // PRIMARY KEY, so rowid order is idx order; the sort keeps idx order where rows are stored
-    // otherwise.
+    // Seek by rowid regardless of indexes; idx normally aliases rowid, but sort for layouts where it does not.
     const readMetadata = Effect.fnUntraced(function* (
       query: string,
       pageRows: number,
@@ -242,8 +235,7 @@ const readDatabase = Effect.fn("readDatabase")(function* (
           }>(query, [after, pageRows])
           .pipe(Effect.withTracerEnabled(false));
         for (const row of rows) {
-          // Skipped here rather than in SQL, so a statement never scans past
-          // more than one page of steps that have no metadata.
+          // Filter outside SQL to bound scans to one page, including rows without metadata.
           if (step && row.data === null) continue;
           const idx = row.idx;
           if (typeof idx !== "number") {
@@ -351,12 +343,7 @@ interface CachedDatabase {
   readonly candidates: readonly UsageCandidate[];
 }
 
-/**
- * Parsed databases keyed by canonical path. An entry is reused only while both
- * the database and its `-wal` sidecar keep the same size, mtime and ctime: new
- * rows land in the WAL without touching the main file until a checkpoint, and
- * ctime moves on any content write even when mtime is restored.
- */
+/** Fingerprint canonical DB/WAL paths by size, mtime and ctime; WAL holds new rows, and ctime catches restored mtimes. */
 export const makeAntigravityUsageCache = () => new Map<string, CachedDatabase>();
 
 export const readAntigravityUsage = Effect.fn("readAntigravityUsage")(function* (
@@ -457,59 +444,56 @@ export const readAntigravityUsage = Effect.fn("readAntigravityUsage")(function* 
     cache?.set(canonical, { fingerprint, candidates });
     return candidates;
   });
-  const walk = (directory: string, root: string): Effect.Effect<void> =>
-    Effect.gen(function* () {
-      const names = yield* fileSystem.readDirectory(directory).pipe(
-        Effect.catchTags({
-          PlatformError: (cause) => {
-            if (cause.reason._tag !== "NotFound") errors.push(directory);
-            return Effect.succeed(null);
-          },
-        }),
-      );
-      if (names === null) return;
-      names.sort((a, b) => a.localeCompare(b));
-      for (const name of names) {
-        const path = pathService.join(directory, name);
-        // Like a directory listing's entry types: symlinks are neither files nor directories.
-        const isLink = Exit.isSuccess(yield* Effect.exit(fileSystem.readLink(path)));
-        const type = isLink
-          ? "SymbolicLink"
-          : yield* fileSystem.stat(path).pipe(
-              Effect.map((info) => info.type),
-              Effect.orElseSucceed(() => null),
-            );
-        if (type === "Directory") {
-          yield* walk(path, root);
-        } else if ((type === "File" || type === null) && name.endsWith(".db")) {
-          const candidates = yield* readFile(path).pipe(
-            Effect.catch(() => {
-              errors.push(path);
-              return Effect.succeed(null);
-            }),
+  const walk = Effect.fn("antigravityUsageReader.walk")(function* (
+    directory: string,
+    root: string,
+  ): Effect.fn.Return<void> {
+    const names = yield* fileSystem.readDirectory(directory).pipe(
+      Effect.catchTags({
+        PlatformError: (cause) => {
+          if (cause.reason._tag !== "NotFound") errors.push(directory);
+          return Effect.succeed(null);
+        },
+      }),
+    );
+    if (names === null) return;
+    names.sort((a, b) => a.localeCompare(b));
+    for (const name of names) {
+      const path = pathService.join(directory, name);
+      // Like a directory listing's entry types: symlinks are neither files nor directories.
+      const isLink = Exit.isSuccess(yield* Effect.exit(fileSystem.readLink(path)));
+      const type = isLink
+        ? "SymbolicLink"
+        : yield* fileSystem.stat(path).pipe(
+            Effect.map((info) => info.type),
+            Effect.orElseSucceed(() => null),
           );
-          if (candidates === null) continue;
-          const fileIndex = files.length;
-          files.push({ root, path, records: [] });
-          for (const [index, candidate] of candidates.entries()) {
-            append(candidate, fileIndex);
-            if (index % 256 === 255) yield* Effect.yieldNow;
-          }
+      if (type === "Directory") {
+        yield* walk(path, root);
+      } else if ((type === "File" || type === null) && name.endsWith(".db")) {
+        const candidates = yield* readFile(path).pipe(
+          Effect.catch(() => {
+            errors.push(path);
+            return Effect.succeed(null);
+          }),
+        );
+        if (candidates === null) continue;
+        const fileIndex = files.length;
+        files.push({ root, path, records: [] });
+        for (const [index, candidate] of candidates.entries()) {
+          append(candidate, fileIndex);
+          if (index % 256 === 255) yield* Effect.yieldNow;
         }
       }
-    });
+    }
+  });
   for (const root of roots) yield* walk(root, root);
   if (cache !== undefined) {
     for (const key of cache.keys()) if (!visited.has(key)) cache.delete(key);
   }
   for (const [index, group] of groups.entries()) {
     if (group.parent === index && group.record.timestampMs >= sinceMs) {
-      // Merging may still swap an `antigravity-unknown` model for a named one, so price here.
-      const { record } = group;
-      files[group.fileIndex]!.records.push({
-        ...record,
-        rateModel: antigravityRateModel(record.model),
-      });
+      files[group.fileIndex]!.records.push(withRateModel(group.record));
     }
   }
   return { files, errors };
