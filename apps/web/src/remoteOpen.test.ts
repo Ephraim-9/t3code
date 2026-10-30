@@ -4,9 +4,9 @@ import {
   SshConnectionTarget,
 } from "@t3tools/client-runtime/connection";
 import { buildRemoteOpenUrl, EnvironmentId } from "@t3tools/contracts";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
-import { resolveRemoteOpenState } from "./remoteOpen";
+import { remoteDefaultEditor, resolveRemoteOpenState } from "./remoteOpen";
 
 const environmentId = EnvironmentId.make("environment-1");
 
@@ -184,5 +184,24 @@ describe("buildRemoteOpenUrl", () => {
         `${editor}, isFile=${isFile}`,
       ).toBe(expected);
     }
+  });
+});
+
+describe("browser remote editors", () => {
+  it("builds vscodium and zed links for editors a browser cannot probe", () => {
+    expect(
+      buildRemoteOpenUrl({ editor: "vscodium", host: "sol", absolutePath: "/work/project" }),
+    ).toBe("vscodium://vscode-remote/ssh-remote+sol/work/project");
+    expect(buildRemoteOpenUrl({ editor: "zed", host: "sol", absolutePath: "/work/project" })).toBe(
+      "zed://ssh/sol/work/project",
+    );
+  });
+
+  it("defaults to VS Code only when there is no desktop bridge", () => {
+    vi.stubGlobal("window", {});
+    expect(remoteDefaultEditor()).toBe("vscode");
+    vi.stubGlobal("window", { desktopBridge: {} });
+    expect(remoteDefaultEditor()).toBeUndefined();
+    vi.unstubAllGlobals();
   });
 });

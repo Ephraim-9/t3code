@@ -44,13 +44,18 @@ export class PreferredEditorUnavailableError extends Schema.TaggedError<Preferre
   }
 }
 
-export function usePreferredEditor(availableEditors: ReadonlyArray<EditorId>) {
+export function usePreferredEditor(
+  availableEditors: ReadonlyArray<EditorId>,
+  defaultEditor?: EditorId,
+) {
   const [lastEditor, setLastEditor] = useLocalStorage(LAST_EDITOR_KEY, null, EditorId);
 
   const effectiveEditor =
     lastEditor && availableEditors.includes(lastEditor)
       ? lastEditor
-      : (EDITORS.find((editor) => availableEditors.includes(editor.id))?.id ?? null);
+      : defaultEditor && availableEditors.includes(defaultEditor)
+        ? defaultEditor
+        : (EDITORS.find((editor) => availableEditors.includes(editor.id))?.id ?? null);
 
   return [effectiveEditor, setLastEditor] as const;
 }
